@@ -14,9 +14,13 @@
 #define HCSR04_TRIG 3
 #define HCSR04_ECHO 4
 // Дисплей
-#define LCD_CS 10
-#define LCD_DC 9
+#define LCD_CS  10
+#define LCD_DC  9
 #define LCD_RST 8
+// Сервопривод
+#define SERVO_CTRL 5
+
+// Дисплей, константы
 
 #define SCREEN_W 160
 #define SCREEN_H 128
@@ -27,9 +31,18 @@
 #define SCREEN_RADAR_AREA_W SCREEN_W
 #define SCREEN_RADAR_AREA_H (SCREEN_H-SCREEN_SERVICE_AREA_H)
 
-// Сервопривод
-#define SERVO_CTRL 5
+#define CENTER_X SCREEN_W / 2
+#define CENTER_Y SCREEN_H / 2
 
+#define MEASURE_PERIOD_MS 150
+
+
+#define RADAR_SCAN_RADIUS_PIX (SCREEN_RADAR_AREA_H - 12)
+#define DMAX_CM               (96)
+#define D_IN_PIX              (DMAX_CM/RADAR_SCAN_RADIUS_PIX)
+
+#define SECTOR_SCAN_RB_DEG 30
+#define SECTOR_SCAN_LB_DEG 150
 
 // ================================================
 // Глобальные переменные
@@ -41,6 +54,28 @@ ST7735_LTSM myTFT;
 NewPing Sonar(HCSR04_TRIG, HCSR04_ECHO, 400);
 
 Servo servo1;
+
+void StartScreen()
+{
+  myTFT.fillScreen(myTFT.C_BLACK);
+  myTFT.drawRectWH(0, 0, SCREEN_W, SCREEN_H-SCREEN_SERVICE_AREA_H, myTFT.C_GREEN);
+  myTFT.drawRectWH(0, 0, SCREEN_W, SCREEN_H,                       myTFT.C_GREEN);
+
+  myTFT.drawCircle(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H, SCREEN_RADAR_AREA_H-8,  myTFT.C_GREEN);
+  myTFT.drawCircle(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H, SCREEN_RADAR_AREA_H-38, myTFT.C_GREEN);
+  myTFT.drawCircle(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H, SCREEN_RADAR_AREA_H-68, myTFT.C_GREEN);
+
+  myTFT.fillRect(0, SCREEN_H-SCREEN_SERVICE_AREA_H, SCREEN_W, SCREEN_SERVICE_AREA_H, myTFT.C_BLACK);
+
+
+	myTFT.setTextColor(myTFT.C_GREEN, myTFT.C_BLACK);
+  myTFT.setFont(FontSinclairS);
+
+	myTFT.setCursor(0, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
+  myTFT.print(" D(cm):");
+  myTFT.setCursor((SCREEN_W/2)+5, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
+  myTFT.print("A(dg):");
+}
 
 void setup() 
 {
@@ -64,23 +99,56 @@ void setup()
 
   // Начальная картинка
   myTFT.setRotation(3);
-	myTFT.fillScreen(myTFT.C_BLACK);
-  myTFT.drawRectWH(0, 0, SCREEN_W, SCREEN_H-SCREEN_SERVICE_AREA_H, myTFT.C_GREEN);
-  myTFT.drawRectWH(0, 0, SCREEN_W, SCREEN_H,                     myTFT.C_GREEN);
-
-  myTFT.drawCircle(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H, SCREEN_RADAR_AREA_H-80, myTFT.C_GREEN);
-  myTFT.drawCircle(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H, SCREEN_RADAR_AREA_H-50, myTFT.C_GREEN);
-  myTFT.drawCircle(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H, SCREEN_RADAR_AREA_H-20, myTFT.C_GREEN);
-
-  myTFT.fillRect(0, SCREEN_H-SCREEN_SERVICE_AREA_H, SCREEN_W, SCREEN_SERVICE_AREA_H, myTFT.C_BLACK);
-
-
-	myTFT.setTextColor(myTFT.C_GREEN, myTFT.C_BLACK);
-  myTFT.setFont(FontSinclairS);
-
-	myTFT.setCursor(0, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
-  myTFT.print("Distance:\n");
+  StartScreen();
   
+}
+
+#define TO_RAD (M_PI/180.0) 
+#define BEAM_HALF_WIDTH_DEG 1
+
+// ===============================================
+// Функция для рисования линии под заданным углом (в градусах)
+void DrawLineAtAngle(int angle, int distance, uint16_t color) 
+{
+  static int VecLB[2]   = {0};
+  static int VecDir[2]  = {0};
+
+  // Вычисляем конечную точку линии по радиусу
+  int XDir = CENTER_X                +  ((RADAR_SCAN_RADIUS_PIX+4)* cos(radians(angle)));
+  int YDir = (SCREEN_RADAR_AREA_H-2) -  ((RADAR_SCAN_RADIUS_PIX+4)* sin(radians(angle)));
+
+  int XLB   = CENTER_X                +  ((RADAR_SCAN_RADIUS_PIX+8) * cos(radians(angle)));
+  int YLB   = (SCREEN_RADAR_AREA_H-2) -  ((RADAR_SCAN_RADIUS_PIX+8) * sin(radians(angle)));
+
+  // Рисуем линию от центра к конечной точке
+  myTFT.drawLine(XDir, YDir, XLB, YLB, myTFT.C_GREEN);
+    // очистка пред. позиции луча
+  if (VecLB[1])
+  {
+    myTFT.drawLine(VecDir[0], VecDir[1], VecLB[0], VecLB[1], myTFT.C_BLACK);
+  }
+  VecLB[0] = XLB;
+  VecLB[1] = YLB;
+  VecDir[0] = XDir;
+  VecDir[1] = YDir;
+
+
+  // прибитие дальности
+  if (distance > DMAX_CM)
+    distance = DMAX_CM;
+  int distancetopix = (distance/D_IN_PIX);
+
+  // отрисовка луча
+  for (int i = BEAM_HALF_WIDTH_DEG-1; i > -BEAM_HALF_WIDTH_DEG; i--)
+  {
+    int XDist = CENTER_X                +  (distancetopix) * cos(radians(angle)+(i*TO_RAD));
+    int YDist = (SCREEN_RADAR_AREA_H-2) -  (distancetopix) * sin(radians(angle)+(i*TO_RAD));
+    int XNo   = CENTER_X                +  (RADAR_SCAN_RADIUS_PIX) * cos(radians(angle)+(i*TO_RAD));
+    int YNo   = (SCREEN_RADAR_AREA_H-2) -  (RADAR_SCAN_RADIUS_PIX) * sin(radians(angle)+(i*TO_RAD));
+    // Рисуем линию от центра к конечной точке
+    myTFT.drawLine(SCREEN_RADAR_AREA_W/2, SCREEN_RADAR_AREA_H-2, XDist, YDist, myTFT.C_GREEN);
+    myTFT.drawLine(XDist, YDist, XNo, YNo, myTFT.C_BLUE);
+  }
 }
 
 // ===============================================
@@ -105,8 +173,8 @@ float MiddleOf3(float a, float b, float c)
 // Функция получения дальности
 float GetDistance()
 {
-  static unsigned int NumPos = 60;
-  static unsigned int iPos = 0;
+  static int   Angle    =  30;
+  static int   AngleDir =  0;
 
   static float DistanceFiltered = 0;
   // массив для хранения трёх последних измерений
@@ -120,16 +188,19 @@ float GetDistance()
   byte  DeltaMeasures   = 0;
   float Coeff           = 0;
 
-  if (millis() - LastTimeMs > 200) 
-  { // измерение и вывод каждые 50 мс
+  if (millis() - LastTimeMs > MEASURE_PERIOD_MS) 
+  { 
+    servo1.write(1);
+    // измерение и вывод каждые 100 мс
     // счётчик от 0 до 2
     // каждую итерацию таймера i последовательно принимает значения 0, 1, 2, и так по кругу
+
     if (IndexMeasure > 1) IndexMeasure = 0;
     else IndexMeasure++;
 
     // получить расстояние в текущую ячейку массива
     Last3Measures[IndexMeasure] = (float)Sonar.ping() / 57.5; 
-    Serial.print(Last3Measures[IndexMeasure]);                
+    //Serial.print(Last3Measures[IndexMeasure]);                
     // фильтровать медианным фильтром из 3ёх последних измерений
     CurrentDistance = MiddleOf3(Last3Measures[0], Last3Measures[1], Last3Measures[2]);    
 
@@ -145,30 +216,40 @@ float GetDistance()
     {
       // если маленькое - плавный коэффициент
       Coeff = 0.1;
-    }   
-   //Coeff = 0.2     ;                                   
+    }                                    
 
     DistanceFiltered = CurrentDistance * Coeff + DistanceFiltered * (1 - Coeff);     // фильтр "бегущее среднее"
 
     LastTimeMs = millis();                                  // сбросить таймер
 
-    int Step = radians(60)/NumPos; 
+    servo1.write(IndexMeasure*10); 
+
+    myTFT.setCursor((SCREEN_W/2)-20, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
+    myTFT.print("   ");
+    myTFT.setCursor((SCREEN_W/2)-20, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
+    myTFT.print((int)DistanceFiltered);
+    myTFT.setCursor((SCREEN_W/2)+55, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
+    myTFT.print("   ");
+    myTFT.setCursor((SCREEN_W/2)+55, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
+    myTFT.print(Angle-90);
+    //Serial.print(',');
+    //Serial.println(DistanceFiltered);
+
+    DrawLineAtAngle(Angle, (int)DistanceFiltered, myTFT.C_GREEN);
+
+    //Serial.print(',');
+   // Serial.println(Angle);
    
+    if (!AngleDir)
+      Angle += 1;
+    else
+      Angle -= 1;
 
-    myTFT.setCursor(SCREEN_W/2, SCREEN_H-(SCREEN_SERVICE_AREA_H/2)-4);
-    myTFT.print(DistanceFiltered);
+    if (Angle == 150 || Angle == 30)
+    {
+      AngleDir = !AngleDir;
+    }
 
-    myTFT.drawLine(SCREEN_W/2, SCREEN_H-(SCREEN_SERVICE_AREA_H), 
-    cos(iPos*Step)*10, 
-    sin(iPos*Step)*10, 
-    myTFT.C_WHITE);
-
-    iPos++;
-    if (iPos > 60)
-      iPos = 0;
-    
-    Serial.print(',');
-    Serial.println(DistanceFiltered);
     return DistanceFiltered;
   }
 }
